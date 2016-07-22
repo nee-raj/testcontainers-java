@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.output.WaitingConsumer;
+import org.testcontainers.containers.startupcheck.OneShotStartupCheckStrategy;
 import org.testcontainers.images.builder.ImageFromDockerfile;
 import org.testcontainers.images.builder.Transferable;
 
@@ -73,6 +74,9 @@ public class DockerfileTest {
 
     @Test
     public void filePermissions() throws TimeoutException {
+
+        WaitingConsumer consumer = new WaitingConsumer();
+
         ImageFromDockerfile image = new ImageFromDockerfile()
                 .withFileFromTransferable("/someFile.txt", new Transferable() {
                     @Override
@@ -94,22 +98,16 @@ public class DockerfileTest {
                         .from("alpine:3.2")
                         .copy("someFile.txt", "/someFile.txt")
                         .cmd("stat -c \"%a\" /someFile.txt")
-//                        .cmd("stat -c \"%a\" CRASH HERE")  // Debugging
-//                        .cmd("sleep 240")  // Debugging
                 );
 
         GenericContainer container = new GenericContainer(image)
-//                .withLogConsumer(new Slf4jLogConsumer(LOGGER)) // Replaced with a fix to control flow in GenericContainer::tryStart
-                ;
+                .withStartupCheckStrategy(new OneShotStartupCheckStrategy())
+                .withLogConsumer(consumer);
 
         try {
             container.start();
 
-            WaitingConsumer consumer = new WaitingConsumer();
-
-            container.followOutput(consumer, STDOUT);
-
-            consumer.waitUntil(frame -> frame.getUtf8String().contains("123"), 5, TimeUnit.SECONDS);
+            consumer.waitUntil(frame -> frame.getType() == STDOUT && frame.getUtf8String().contains("123"), 5, TimeUnit.SECONDS);
         } finally {
             container.stop();
         }

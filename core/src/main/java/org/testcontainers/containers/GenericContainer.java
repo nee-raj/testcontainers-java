@@ -195,6 +195,7 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
             profiler.start("Start container");
             dockerClient.startContainerCmd(containerId).exec();
 
+            // For all registered output consumers, start following as close to container startup as possible
             this.logConsumers.forEach(this::followOutput);
 
             logger().info("Container {} is starting: {}", dockerImageName, containerId);
@@ -209,30 +210,10 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
             // Wait until the container is running (may not be fully started)
             profiler.start("Wait until container has started properly, or there's evidence it failed to start.");
 
-            // TODO: tidy control flow
-            boolean startedOK = false;
-            try {
-                startedOK = this.startupCheckStrategy.waitUntilStartupSuccessful(dockerClient, containerId);
-
-                if (!startedOK) {
-                    // Bail out, don't wait for the port to start listening.
-                    // (Exception thrown here will be caught below and wrapped)
-                    throw new IllegalStateException("Container did not start correctly.");
-                }
-
-            } finally {
-                // Log output if startup failed, either due to a container failure or exception (including timeout)
-                if (!startedOK) {
-
-                    logger().error("Container did not start correctly; container log output (if any) will be fetched and logged shortly");
-                    FrameConsumerResultCallback resultCallback = new FrameConsumerResultCallback();
-                    resultCallback.addConsumer(STDOUT, new Slf4jLogConsumer(logger()));
-                    resultCallback.addConsumer(STDERR, new Slf4jLogConsumer(logger()));
-                    dockerClient.logContainerCmd(containerId).withStdOut(true).withStdErr(true).exec(resultCallback);
-
-                    // Ensure that container log output is shown before proceeding
-                    resultCallback.getCompletionLatch().await();
-                }
+            if (!this.startupCheckStrategy.waitUntilStartupSuccessful(dockerClient, containerId)) {
+                // Bail out, don't wait for the port to start listening.
+                // (Exception thrown here will be caught below and wrapped)
+                throw new IllegalStateException("Container did not start correctly.");
             }
 
             profiler.start("Wait until container started properly");
@@ -242,6 +223,20 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
             containerIsStarted(containerInfo);
         } catch (Exception e) {
             logger().error("Could not start container", e);
+
+            // Log output if startup failed, either due to a container failure or exception (including timeout)
+            logger().error("Container log output (if any) will follow:");
+            FrameConsumerResultCallback resultCallback = new FrameConsumerResultCallback();
+            resultCallback.addConsumer(STDOUT, new Slf4jLogConsumer(logger()));
+            resultCallback.addConsumer(STDERR, new Slf4jLogConsumer(logger()));
+            dockerClient.logContainerCmd(containerId).withStdOut(true).withStdErr(true).exec(resultCallback);
+
+            // Try to ensure that container log output is shown before proceeding
+            try {
+                resultCallback.getCompletionLatch().await(1, TimeUnit.MINUTES);
+            } catch (InterruptedException ignored) {
+                // Cannot do anything at this point
+            }
 
             throw new ContainerLaunchException("Could not create/start container", e);
         } finally {
@@ -765,6 +760,10 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
         cmd.exec(callback);
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    @Override
     public SELF withLogConsumer(Consumer<OutputFrame> consumer) {
         this.logConsumers.add(consumer);
 

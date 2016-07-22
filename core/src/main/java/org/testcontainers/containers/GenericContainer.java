@@ -128,6 +128,7 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
     @Nullable
     private InspectContainerResponse containerInfo;
 
+    private List<Consumer<OutputFrame>> logConsumers = new ArrayList<>();
 
     private static final Set<String> AVAILABLE_IMAGE_NAME_CACHE = new HashSet<>();
     private static final RateLimiter DOCKER_CLIENT_RATE_LIMITER = RateLimiterBuilder
@@ -135,6 +136,7 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
             .withRate(1, TimeUnit.SECONDS)
             .withConstantThroughput()
             .build();
+
 
     public GenericContainer() {
         this("alpine:3.2");
@@ -193,6 +195,8 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
             profiler.start("Start container");
             dockerClient.startContainerCmd(containerId).exec();
 
+            this.logConsumers.forEach(this::followOutput);
+
             logger().info("Container {} is starting: {}", dockerImageName, containerId);
 
             // Tell subclasses that we're starting
@@ -204,22 +208,31 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
 
             // Wait until the container is running (may not be fully started)
             profiler.start("Wait until container has started properly, or there's evidence it failed to start.");
-            boolean startedOK = this.startupCheckStrategy.waitUntilStartupSuccessful(dockerClient, containerId);
 
-            if (!startedOK) {
+            // TODO: tidy control flow
+            boolean startedOK = false;
+            try {
+                startedOK = this.startupCheckStrategy.waitUntilStartupSuccessful(dockerClient, containerId);
 
-                logger().error("Container did not start correctly; container log output (if any) will be fetched and logged shortly");
-                FrameConsumerResultCallback resultCallback = new FrameConsumerResultCallback();
-                resultCallback.addConsumer(STDOUT, new Slf4jLogConsumer(logger()));
-                resultCallback.addConsumer(STDERR, new Slf4jLogConsumer(logger()));
-                dockerClient.logContainerCmd(containerId).withStdOut(true).withStdErr(true).exec(resultCallback);
+                if (!startedOK) {
+                    // Bail out, don't wait for the port to start listening.
+                    // (Exception thrown here will be caught below and wrapped)
+                    throw new IllegalStateException("Container did not start correctly.");
+                }
 
-                // Ensure that container log output is shown before proceeding
-                resultCallback.getCompletionLatch().await();
+            } finally {
+                // Log output if startup failed, either due to a container failure or exception (including timeout)
+                if (!startedOK) {
 
-                // Bail out, don't wait for the port to start listening.
-                // (Exception thrown here will be caught below and wrapped)
-                throw new IllegalStateException("Container did not start correctly.");
+                    logger().error("Container did not start correctly; container log output (if any) will be fetched and logged shortly");
+                    FrameConsumerResultCallback resultCallback = new FrameConsumerResultCallback();
+                    resultCallback.addConsumer(STDOUT, new Slf4jLogConsumer(logger()));
+                    resultCallback.addConsumer(STDERR, new Slf4jLogConsumer(logger()));
+                    dockerClient.logContainerCmd(containerId).withStdOut(true).withStdErr(true).exec(resultCallback);
+
+                    // Ensure that container log output is shown before proceeding
+                    resultCallback.getCompletionLatch().await();
+                }
             }
 
             profiler.start("Wait until container started properly");
@@ -750,6 +763,12 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
         }
 
         cmd.exec(callback);
+    }
+
+    public SELF withLogConsumer(Consumer<OutputFrame> consumer) {
+        this.logConsumers.add(consumer);
+
+        return self();
     }
 
     @Override

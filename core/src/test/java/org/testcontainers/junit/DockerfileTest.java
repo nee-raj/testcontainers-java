@@ -2,6 +2,8 @@ package org.testcontainers.junit;
 
 import com.github.dockerjava.api.command.BuildImageCmd;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.output.WaitingConsumer;
 import org.testcontainers.images.builder.ImageFromDockerfile;
@@ -17,6 +19,8 @@ import static org.rnorth.visibleassertions.VisibleAssertions.pass;
 import static org.testcontainers.containers.output.OutputFrame.OutputType.STDOUT;
 
 public class DockerfileTest {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(DockerfileTest.class);
 
     @Test
     public void simpleDockerfileWorks() {
@@ -90,9 +94,13 @@ public class DockerfileTest {
                         .from("alpine:3.2")
                         .copy("someFile.txt", "/someFile.txt")
                         .cmd("stat -c \"%a\" /someFile.txt")
+//                        .cmd("stat -c \"%a\" CRASH HERE")  // Debugging
+//                        .cmd("sleep 240")  // Debugging
                 );
 
-        GenericContainer container = new GenericContainer(image);
+        GenericContainer container = new GenericContainer(image)
+//                .withLogConsumer(new Slf4jLogConsumer(LOGGER)) // Replaced with a fix to control flow in GenericContainer::tryStart
+                ;
 
         try {
             container.start();
